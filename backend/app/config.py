@@ -7,7 +7,12 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api"
     DATABASE_URL: str = "sqlite:///./pulselock_prod.db"
     SECRET_KEY: str = "prod-super-secure-hmac-audit-chain-secret-key-2026"
-    ALLOWED_ORIGINS: list[str] = ["http://localhost:5173", "http://localhost:3000", "*"]
+    ALLOWED_ORIGINS: list[str] = [
+        "https://pulselock1.netlify.app",
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "*",
+    ]
 
     class Config:
         env_file = ".env"

@@ -326,7 +326,7 @@ export const PatientPortal: React.FC = () => {
           <p className="text-xs text-zinc-400 font-mono">
             {voiceTranscript
               ? `"${voiceTranscript}"`
-              : "Tap to dispatch: 'Share blood test report with Dr. Gupta for 15 minutes'"}
+              : "Tap to dispatch: 'Share blood test report with Dr. Verma for 15 minutes'"}
           </p>
         </div>
 
