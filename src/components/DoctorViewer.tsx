@@ -1,270 +1,229 @@
-// import { useEffect, useRef, useState, useCallback } from 'react';
+// import React, { useEffect, useState } from "react";
 // import {
-//   Lock,
-//   ShieldX,
+//   Unlock,
+//   Clock,
+//   AlertOctagon,
 //   Loader2,
-//   FileText,
-//   ImageIcon,
-//   Timer,
-//   Eye,
-//   AlertTriangle,
-//   Download,
-// } from 'lucide-react';
-// import { fetchRecord, AccessDeniedError } from '@/lib/api';
-// import { decryptFile, detectMimeType, type DecryptionResult } from '@/lib/crypto';
-// import type { RecordResponse } from '@/lib/api';
-
-// type ViewerState = 'loading' | 'decrypted' | 'expired' | 'error';
+//   ShieldAlert,
+// } from "lucide-react";
+// import { importKeyFromBase64, decryptFile } from "../lib/crypto";
+// import { DecryptedDocumentPayload } from "../types";
 
 // interface DoctorViewerProps {
 //   token: string;
-//   keyBase64: string;
+//   encryptionKey: string;
 // }
 
-// function formatTime(seconds: number): string {
-//   if (seconds <= 0) return '0:00';
-//   const mins = Math.floor(seconds / 60);
-//   const secs = seconds % 60;
-//   if (mins >= 1) {
-//     return `${mins}:${secs.toString().padStart(2, '0')}`;
-//   }
-//   return `${secs}s`;
-// }
+// export const DoctorViewer: React.FC<DoctorViewerProps> = ({
+//   token,
+//   encryptionKey,
+// }) => {
+//   const [loading, setLoading] = useState(true);
+//   const [error, setError] = useState<string | null>(null);
+//   const [docData, setDocData] = useState<DecryptedDocumentPayload | null>(null);
+//   const [blobUrl, setBlobUrl] = useState<string | null>(null);
+//   const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
 
-// export default function DoctorViewer({ token, keyBase64 }: DoctorViewerProps) {
-//   const [state, setState] = useState<ViewerState>('loading');
-//   const [errorMsg, setErrorMsg] = useState('');
-//   const [remaining, setRemaining] = useState(0);
-//   const [docInfo, setDocInfo] = useState<{ filename: string; mimeType: string } | null>(null);
-//   const blobUrlRef = useRef<string | null>(null);
-
-//   const clearBlob = useCallback(() => {
-//     if (blobUrlRef.current) {
-//       URL.revokeObjectURL(blobUrlRef.current);
-//       blobUrlRef.current = null;
-//     }
-//   }, []);
-
+//   // 1. Decrypt locally in memory
 //   useEffect(() => {
-//     let cancelled = false;
+//     let activeBlob: string | null = null;
 
-//     const load = async () => {
+//     async function fetchAndDecrypt() {
 //       try {
-//         const record: RecordResponse = await fetchRecord(token);
+//         const res = await fetch(`http://localhost:8000/api/record/${token}`);
+//         if (!res.ok) {
+//           if (res.status === 403) throw new Error("ACCESS_EXPIRED");
+//           throw new Error("INVALID_TOKEN");
+//         }
+//         const data: DecryptedDocumentPayload = await res.json();
+//         setDocData(data);
+//         setSecondsRemaining(data.time_remaining_seconds || 60);
 
-//         if (cancelled) return;
-
-//         const decrypted = await decryptFile(
-//           record.ciphertext,
-//           record.iv,
-//           keyBase64
+//         const cryptoKey = await importKeyFromBase64(encryptionKey);
+//         const decryptedBuffer = await decryptFile(
+//           data.ciphertext,
+//           data.iv,
+//           cryptoKey,
 //         );
 
-//         if (cancelled) return;
-
-//         const mimeType = record.mime_type || detectMimeType(record.filename);
-//         const blob = new Blob([decrypted], { type: mimeType });
-//         const url = URL.createObjectURL(blob);
-//         blobUrlRef.current = url;
-
-//         const expiresAt = new Date(record.expires_at).getTime();
-//         const now = Date.now();
-//         const initialRemaining = Math.max(0, Math.floor((expiresAt - now) / 1000));
-
-//         if (initialRemaining <= 0) {
-//           clearBlob();
-//           setState('expired');
-//           return;
-//         }
-
-//         setRemaining(initialRemaining);
-//         setDocInfo({ filename: record.filename, mimeType });
-//         setState('decrypted');
-//       } catch (err) {
-//         if (cancelled) return;
-//         if (err instanceof AccessDeniedError) {
-//           setState('expired');
+//         const mime = data.file_type || "application/pdf";
+//         const blob = new Blob([decryptedBuffer], { type: mime });
+//         activeBlob = URL.createObjectURL(blob);
+//         setBlobUrl(activeBlob);
+//       } catch (err: unknown) {
+//         const message = err instanceof Error ? err.message : "";
+//         if (message === "ACCESS_EXPIRED") {
+//           setError("Access window has expired. Records permanently sealed.");
 //         } else {
-//           setErrorMsg(
-//             err instanceof Error ? err.message : 'Failed to load document'
-//           );
-//           setState('error');
+//           setError("Invalid or corrupted access pass.");
 //         }
+//       } finally {
+//         setLoading(false);
 //       }
-//     };
+//     }
 
-//     load();
+//     if (token && encryptionKey) {
+//       fetchAndDecrypt();
+//     } else {
+//       setError("Missing token or decryption key in URL.");
+//       setLoading(false);
+//     }
 
 //     return () => {
-//       cancelled = true;
-//       clearBlob();
+//       if (activeBlob) {
+//         URL.revokeObjectURL(activeBlob);
+//       }
 //     };
-//   }, [token, keyBase64, clearBlob]);
+//   }, [token, encryptionKey]);
 
-//   // Countdown timer
+//   // 2. Memory Purge on timer zero
 //   useEffect(() => {
-//     if (state !== 'decrypted') return;
+//     if (secondsRemaining <= 0 && blobUrl) {
+//       URL.revokeObjectURL(blobUrl);
+//       setBlobUrl(null);
+//       setError("Session expired. Local memory purged.");
+//       return;
+//     }
 
 //     const interval = setInterval(() => {
-//       setRemaining((prev) => {
-//         if (prev <= 1) {
-//           clearBlob();
-//           setState('expired');
-//           return 0;
-//         }
-//         return prev - 1;
-//       });
+//       setSecondsRemaining((prev) => (prev > 0 ? prev - 1 : 0));
 //     }, 1000);
 
 //     return () => clearInterval(interval);
-//   }, [state, clearBlob]);
+//   }, [secondsRemaining, blobUrl]);
 
-//   // Clean up blob on unmount
+//   // 3. Block Right-Click, Print, Save shortcuts
 //   useEffect(() => {
-//     return () => clearBlob();
-//   }, [clearBlob]);
+//     const handleKeyDown = (e: KeyboardEvent) => {
+//       // Ctrl+S or Cmd+S (Save)
+//       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+//         e.preventDefault();
+//         alert("Downloading is disabled by Patient Privacy Policy.");
+//       }
+//       // Ctrl+P or Cmd+P (Print)
+//       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+//         e.preventDefault();
+//         alert("Printing is restricted on ephemeral medical records.");
+//       }
+//     };
 
-//   const isImage = docInfo?.mimeType.startsWith('image/');
-//   const isPdf = docInfo?.mimeType === 'application/pdf';
+//     const handleContextMenu = (e: MouseEvent) => {
+//       e.preventDefault();
+//     };
 
-//   // ── Loading state ──────────────────────────────────────────────────────
-//   if (state === 'loading') {
+//     window.addEventListener("keydown", handleKeyDown);
+//     window.addEventListener("contextmenu", handleContextMenu);
+
+//     return () => {
+//       window.removeEventListener("keydown", handleKeyDown);
+//       window.removeEventListener("contextmenu", handleContextMenu);
+//     };
+//   }, []);
+
+//   if (loading) {
 //     return (
-//       <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in">
-//         <Loader2 className="w-12 h-12 text-emerald-400 animate-spin mb-4" />
-//         <h2 className="text-xl font-semibold text-slate-200">
-//           Fetching encrypted record...
-//         </h2>
-//         <p className="text-sm text-slate-400 mt-2">
-//           Retrieving ciphertext and IV from secure server
+//       <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-200">
+//         <Loader2 className="w-10 h-10 text-emerald-400 animate-spin mb-3" />
+//         <p className="text-sm font-medium">
+//           Validating token & decrypting record in memory...
 //         </p>
 //       </div>
 //     );
 //   }
 
-//   // ── Expired / revoked state ────────────────────────────────────────────
-//   if (state === 'expired') {
+//   if (error || !blobUrl) {
 //     return (
-//       <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in">
-//         <div className="w-20 h-20 rounded-2xl bg-red-500/10 flex items-center justify-center border-2 border-red-500/30 mb-6">
-//           <ShieldX className="w-10 h-10 text-red-400" />
-//         </div>
-//         <h2 className="text-2xl font-bold text-red-400 mb-2">
-//           Access Revoked / Session Expired
-//         </h2>
-//         <p className="text-slate-400 max-w-md text-center">
-//           This secure document link has expired. The time-limited access window
-//           has closed and the decrypted content has been cleared from memory.
-//         </p>
-//         <div className="mt-6 flex items-center gap-2 text-xs text-slate-500">
-//           <Lock className="w-3.5 h-3.5" />
-//           <span>Decrypted data has been purged from browser memory</span>
+//       <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 select-none">
+//         <div className="max-w-md w-full bg-slate-900 border border-red-500/30 rounded-2xl p-8 text-center shadow-2xl">
+//           <div className="w-14 h-14 bg-red-500/10 border border-red-500/30 rounded-full flex items-center justify-center mx-auto text-red-400 mb-4">
+//             <AlertOctagon className="w-8 h-8" />
+//           </div>
+//           <h2 className="text-lg font-bold text-slate-100 mb-2">
+//             Access Terminated
+//           </h2>
+//           <p className="text-xs text-slate-400 leading-relaxed mb-6">{error}</p>
+//           <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-400 font-mono">
+//             Zero-knowledge session wiped from browser RAM.
+//           </div>
 //         </div>
 //       </div>
 //     );
 //   }
 
-//   // ── Error state ────────────────────────────────────────────────────────
-//   if (state === 'error') {
-//     return (
-//       <div className="flex flex-col items-center justify-center min-h-[60vh] animate-fade-in">
-//         <div className="w-20 h-20 rounded-2xl bg-amber-500/10 flex items-center justify-center border-2 border-amber-500/30 mb-6">
-//           <AlertTriangle className="w-10 h-10 text-amber-400" />
-//         </div>
-//         <h2 className="text-xl font-semibold text-amber-400 mb-2">
-//           Unable to Load Document
-//         </h2>
-//         <p className="text-slate-400 max-w-md text-center text-sm">{errorMsg}</p>
-//       </div>
-//     );
-//   }
-
-//   // ── Decrypted document viewer ──────────────────────────────────────────
-//   const timerColor =
-//     remaining <= 10
-//       ? 'text-red-400 border-red-500/30 bg-red-500/10'
-//       : remaining <= 30
-//         ? 'text-amber-400 border-amber-500/30 bg-amber-500/10'
-//         : 'text-emerald-400 border-emerald-500/30 bg-emerald-500/10';
+//   // Disable browser PDF download toolbar
+//   const securePdfUrl = `${blobUrl}#toolbar=0&navpanes=0&scrollbar=0`;
 
 //   return (
-//     <div className="space-y-4 animate-fade-in">
-//       {/* Header bar with countdown */}
-//       <div className="glass-card p-4 flex items-center justify-between flex-wrap gap-3">
-//         <div className="flex items-center gap-3">
-//           <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
-//             {isImage ? (
-//               <ImageIcon className="w-5 h-5 text-emerald-400" />
-//             ) : (
-//               <FileText className="w-5 h-5 text-emerald-400" />
-//             )}
+//     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col select-none">
+//       {/* Header */}
+//       <header className="bg-slate-900/90 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md">
+//         <div className="flex items-center space-x-3">
+//           <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400">
+//             <Unlock className="w-5 h-5" />
 //           </div>
 //           <div>
-//             <p className="text-sm font-medium text-slate-200">
-//               {docInfo?.filename ?? 'Document'}
-//             </p>
-//             <p className="text-xs text-slate-500 flex items-center gap-1.5">
-//               <Eye className="w-3 h-3" />
-//               Decrypted locally in browser — key from URL fragment
+//             <h2 className="text-sm font-semibold text-slate-100">
+//               {docData?.filename}
+//             </h2>
+//             <p className="text-xs text-slate-400">
+//               Consultation Session: {docData?.doctor_alias || "Doctor"}
 //             </p>
 //           </div>
 //         </div>
 
-//         <div className={`flex items-center gap-2 px-4 py-2.5 rounded-xl border ${timerColor}`}>
-//           <Timer className="w-4 h-4" />
-//           <span className="font-mono font-semibold text-lg tabular-nums">
-//             {formatTime(remaining)}
-//           </span>
-//           <span className="text-xs opacity-70">remaining</span>
+//         <div className="flex items-center space-x-4">
+//           <div className="flex items-center gap-1.5 px-3 py-1 bg-red-950/50 border border-red-500/30 text-red-400 text-xs rounded-xl font-mono">
+//             <ShieldAlert className="w-3.5 h-3.5" />
+//             <span>Download Disabled</span>
+//           </div>
+//           <div className="flex items-center gap-2 px-3.5 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 font-mono text-xs">
+//             <Clock className="w-4 h-4 animate-pulse" />
+//             <span>
+//               Time Left: {Math.floor(secondsRemaining / 60)}:
+//               {String(secondsRemaining % 60).padStart(2, "0")}
+//             </span>
+//           </div>
 //         </div>
-//       </div>
+//       </header>
 
-//       {/* Document viewer */}
-//       <div className="glass-card p-2 overflow-hidden">
-//         {isImage && blobUrlRef.current ? (
-//           <div className="flex items-center justify-center bg-slate-950/50 rounded-xl p-4 min-h-[400px]">
+//       {/* Viewer with Watermark Overlay */}
+//       <main className="flex-1 p-6 flex flex-col items-center justify-center relative">
+//         <div className="w-full max-w-4xl h-[75vh] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl relative">
+//           {/* Dynamic Digital Watermark to prevent covert screen recording */}
+//           <div className="absolute inset-0 pointer-events-none z-20 flex flex-col justify-around items-center opacity-[0.06] select-none text-slate-100 font-mono text-xl rotate-[-25deg]">
+//             <p>
+//               CONFIDENTIAL • {docData?.doctor_alias?.toUpperCase() || "DOCTOR"}{" "}
+//               • EPHEMERAL ACCESS
+//             </p>
+//             <p>PATIENT SOVEREIGN VAULT • NON-TRANSFERABLE</p>
+//             <p>
+//               CONFIDENTIAL • {docData?.doctor_alias?.toUpperCase() || "DOCTOR"}{" "}
+//               • EPHEMERAL ACCESS
+//             </p>
+//           </div>
+
+//           {docData?.file_type?.includes("image") ? (
 //             <img
-//               src={blobUrlRef.current}
-//               alt={docInfo?.filename ?? 'Medical image'}
-//               className="max-w-full max-h-[70vh] rounded-lg object-contain"
+//               src={blobUrl}
+//               alt="Medical Document"
+//               className="w-full h-full object-contain p-4 select-none pointer-events-none"
+//               onContextMenu={(e) => e.preventDefault()}
 //             />
-//           </div>
-//         ) : isPdf && blobUrlRef.current ? (
-//           <iframe
-//             src={blobUrlRef.current}
-//             title="Medical Document"
-//             className="w-full h-[70vh] rounded-xl border-0 bg-slate-950"
-//           />
-//         ) : blobUrlRef.current ? (
-//           <div className="flex flex-col items-center justify-center py-16">
-//             <FileText className="w-12 h-12 text-slate-500 mb-4" />
-//             <p className="text-slate-300 mb-1">{docInfo?.filename}</p>
-//             <p className="text-xs text-slate-500 mb-4">
-//               This file type cannot be previewed inline
-//             </p>
-//             <a
-//               href={blobUrlRef.current}
-//               download={docInfo?.filename ?? 'document'}
-//               className="btn-secondary flex items-center gap-2"
-//             >
-//               <Download className="w-4 h-4" />
-//               Download File
-//             </a>
-//           </div>
-//         ) : null}
-//       </div>
+//           ) : (
+//             <iframe
+//               src={securePdfUrl}
+//               className="w-full h-full border-0 select-none"
+//               title="Medical Report"
+//             />
+//           )}
+//         </div>
+//       </main>
 //     </div>
 //   );
-// }
+// };
 
 import React, { useEffect, useState } from "react";
-import {
-  Unlock,
-  Clock,
-  AlertOctagon,
-  Loader2,
-  ShieldAlert,
-} from "lucide-react";
+import { Loader2, AlertOctagon } from "lucide-react";
 import { importKeyFromBase64, decryptFile } from "../lib/crypto";
 import { DecryptedDocumentPayload } from "../types";
 
@@ -283,7 +242,6 @@ export const DoctorViewer: React.FC<DoctorViewerProps> = ({
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [secondsRemaining, setSecondsRemaining] = useState<number>(0);
 
-  // 1. Decrypt locally in memory
   useEffect(() => {
     let activeBlob: string | null = null;
 
@@ -335,7 +293,6 @@ export const DoctorViewer: React.FC<DoctorViewerProps> = ({
     };
   }, [token, encryptionKey]);
 
-  // 2. Memory Purge on timer zero
   useEffect(() => {
     if (secondsRemaining <= 0 && blobUrl) {
       URL.revokeObjectURL(blobUrl);
@@ -351,18 +308,15 @@ export const DoctorViewer: React.FC<DoctorViewerProps> = ({
     return () => clearInterval(interval);
   }, [secondsRemaining, blobUrl]);
 
-  // 3. Block Right-Click, Print, Save shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl+S or Cmd+S (Save)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        alert("Downloading is disabled by Patient Privacy Policy.");
+        alert("Downloading disabled by sovereign patient policy.");
       }
-      // Ctrl+P or Cmd+P (Print)
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
         e.preventDefault();
-        alert("Printing is restricted on ephemeral medical records.");
+        alert("Printing restricted on ephemeral medical records.");
       }
     };
 
@@ -381,97 +335,74 @@ export const DoctorViewer: React.FC<DoctorViewerProps> = ({
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center text-slate-200">
-        <Loader2 className="w-10 h-10 text-emerald-400 animate-spin mb-3" />
-        <p className="text-sm font-medium">
-          Validating token & decrypting record in memory...
-        </p>
+      <div className="min-h-screen bg-zinc-950 flex flex-col items-center justify-center text-zinc-300 font-mono text-xs">
+        <Loader2 className="w-5 h-5 text-emerald-400 animate-spin mb-3" />
+        <p>DECRYPTING PAYLOAD IN IN-MEMORY SANDBOX...</p>
       </div>
     );
   }
 
   if (error || !blobUrl) {
     return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4 select-none">
-        <div className="max-w-md w-full bg-slate-900 border border-red-500/30 rounded-2xl p-8 text-center shadow-2xl">
-          <div className="w-14 h-14 bg-red-500/10 border border-red-500/30 rounded-full flex items-center justify-center mx-auto text-red-400 mb-4">
-            <AlertOctagon className="w-8 h-8" />
+      <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-4">
+        <div className="max-w-md w-full border border-zinc-900 bg-zinc-950 p-8 text-center space-y-4">
+          <div className="w-10 h-10 border border-red-500/30 flex items-center justify-center mx-auto text-red-400">
+            <AlertOctagon className="w-5 h-5" />
           </div>
-          <h2 className="text-lg font-bold text-slate-100 mb-2">
+          <h2 className="font-mono text-xs uppercase tracking-wider text-zinc-100">
             Access Terminated
           </h2>
-          <p className="text-xs text-slate-400 leading-relaxed mb-6">{error}</p>
-          <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-400 font-mono">
-            Zero-knowledge session wiped from browser RAM.
+          <p className="text-xs text-zinc-500 font-mono">{error}</p>
+          <div className="p-3 bg-zinc-900 text-[10px] text-zinc-500 font-mono uppercase">
+            RAM memory flushed via revokeObjectURL
           </div>
         </div>
       </div>
     );
   }
 
-  // Disable browser PDF download toolbar
   const securePdfUrl = `${blobUrl}#toolbar=0&navpanes=0&scrollbar=0`;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col select-none">
-      {/* Header */}
-      <header className="bg-slate-900/90 border-b border-slate-800 px-6 py-4 flex items-center justify-between sticky top-0 z-30 backdrop-blur-md">
-        <div className="flex items-center space-x-3">
-          <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400">
-            <Unlock className="w-5 h-5" />
-          </div>
-          <div>
-            <h2 className="text-sm font-semibold text-slate-100">
-              {docData?.filename}
-            </h2>
-            <p className="text-xs text-slate-400">
-              Consultation Session: {docData?.doctor_alias || "Doctor"}
-            </p>
-          </div>
+    <div className="min-h-screen bg-zinc-950 text-zinc-100 flex flex-col font-mono select-none">
+      <header className="border-b border-zinc-900 bg-zinc-950 px-6 py-3 flex items-center justify-between sticky top-0 z-30">
+        <div>
+          <h2 className="text-xs font-semibold text-zinc-200">
+            {docData?.filename}
+          </h2>
+          <p className="text-[10px] text-zinc-500 uppercase">
+            Consultation: {docData?.doctor_alias || "Doctor"}
+          </p>
         </div>
 
-        <div className="flex items-center space-x-4">
-          <div className="flex items-center gap-1.5 px-3 py-1 bg-red-950/50 border border-red-500/30 text-red-400 text-xs rounded-xl font-mono">
-            <ShieldAlert className="w-3.5 h-3.5" />
-            <span>Download Disabled</span>
-          </div>
-          <div className="flex items-center gap-2 px-3.5 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-400 font-mono text-xs">
-            <Clock className="w-4 h-4 animate-pulse" />
-            <span>
-              Time Left: {Math.floor(secondsRemaining / 60)}:
-              {String(secondsRemaining % 60).padStart(2, "0")}
-            </span>
+        <div className="flex items-center space-x-3 text-xs">
+          <span className="text-[10px] text-red-400 border border-red-500/30 px-2 py-0.5 uppercase">
+            No Download
+          </span>
+          <div className="text-[11px] text-amber-400 border border-zinc-800 px-2.5 py-1">
+            Timer: {Math.floor(secondsRemaining / 60)}:
+            {String(secondsRemaining % 60).padStart(2, "0")}
           </div>
         </div>
       </header>
 
-      {/* Viewer with Watermark Overlay */}
       <main className="flex-1 p-6 flex flex-col items-center justify-center relative">
-        <div className="w-full max-w-4xl h-[75vh] bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl relative">
-          {/* Dynamic Digital Watermark to prevent covert screen recording */}
-          <div className="absolute inset-0 pointer-events-none z-20 flex flex-col justify-around items-center opacity-[0.06] select-none text-slate-100 font-mono text-xl rotate-[-25deg]">
-            <p>
-              CONFIDENTIAL • {docData?.doctor_alias?.toUpperCase() || "DOCTOR"}{" "}
-              • EPHEMERAL ACCESS
-            </p>
-            <p>PATIENT SOVEREIGN VAULT • NON-TRANSFERABLE</p>
-            <p>
-              CONFIDENTIAL • {docData?.doctor_alias?.toUpperCase() || "DOCTOR"}{" "}
-              • EPHEMERAL ACCESS
-            </p>
+        <div className="w-full max-w-4xl h-[75vh] border border-zinc-900 bg-zinc-950 relative overflow-hidden">
+          <div className="absolute inset-0 pointer-events-none z-20 flex flex-col justify-around items-center opacity-[0.04] text-zinc-100 font-mono text-sm rotate-[-20deg]">
+            <p>CONFIDENTIAL • EPHEMERAL PASS • NON-TRANSFERABLE</p>
+            <p>CONFIDENTIAL • EPHEMERAL PASS • NON-TRANSFERABLE</p>
           </div>
 
           {docData?.file_type?.includes("image") ? (
             <img
               src={blobUrl}
               alt="Medical Document"
-              className="w-full h-full object-contain p-4 select-none pointer-events-none"
-              onContextMenu={(e) => e.preventDefault()}
+              className="w-full h-full object-contain p-4 pointer-events-none"
             />
           ) : (
             <iframe
               src={securePdfUrl}
-              className="w-full h-full border-0 select-none"
+              className="w-full h-full border-0"
               title="Medical Report"
             />
           )}
